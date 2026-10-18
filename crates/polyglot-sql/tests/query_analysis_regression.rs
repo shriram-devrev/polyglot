@@ -199,3 +199,22 @@ fn postgres_replication_protocol_commands_parse_as_commands() {
         assert_postgres_command(sql, expected);
     }
 }
+
+#[test]
+fn base_tables_include_every_parenthesized_join_member() {
+    for sql in [
+        "SELECT a.id FROM alpha a JOIN (beta b JOIN gamma c ON b.id = c.id) ON a.id = b.id",
+        "SELECT a.id FROM alpha a JOIN ((beta b JOIN gamma c ON b.id = c.id) LEFT JOIN delta d ON c.id = d.id) ON a.id = b.id",
+        "WITH chosen AS (SELECT id FROM gamma) SELECT a.id FROM alpha a JOIN (beta b JOIN chosen c ON b.id = c.id) ON a.id = b.id",
+        "SELECT a.id FROM alpha a JOIN (beta b JOIN gamma c ON b.id = c.id) AS grouped ON a.id = grouped.id",
+    ] {
+        let analysis = analyze_query(sql, AnalyzeQueryOptions {
+            dialect: DialectType::DuckDB,
+            ..Default::default()
+        }).expect("parenthesized join should analyze");
+        let names: Vec<_> = analysis.base_tables.iter().map(|table| table.name.as_str()).collect();
+        let expected = if sql.contains("delta") { vec!["alpha", "beta", "delta", "gamma"] }
+            else { vec!["alpha", "beta", "gamma"] };
+        assert_eq!(names, expected, "missing join member for {sql}");
+    }
+}

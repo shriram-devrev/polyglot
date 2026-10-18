@@ -686,6 +686,10 @@ fn build_scope_impl(expression: &Expression, current_scope: &mut Scope) {
             // Process subqueries in WHERE, SELECT expressions, etc.
             collect_subqueries(expression, current_scope);
         }
+        Expression::JoinedTable(joined) => {
+            add_join_group_to_scope(joined, current_scope);
+            collect_subqueries(expression, current_scope);
+        }
         Expression::Union(union) => {
             if let Some(with) = &union.with {
                 process_ctes(with, current_scope);
@@ -781,6 +785,16 @@ fn cte_body_self_references(cte: &crate::expressions::Cte) -> bool {
         .is_empty()
 }
 
+fn add_join_group_to_scope(joined: &crate::expressions::JoinedTable, scope: &mut Scope) {
+    add_table_to_scope(&joined.left, scope);
+    for join in &joined.joins {
+        add_table_to_scope(&join.this, scope);
+    }
+    for lateral_view in &joined.lateral_views {
+        add_lateral_view_to_scope(lateral_view, scope);
+    }
+}
+
 fn add_table_to_scope(expr: &Expression, scope: &mut Scope) {
     match expr {
         Expression::Table(table) => {
@@ -823,6 +837,16 @@ fn add_table_to_scope(expr: &Expression, scope: &mut Scope) {
 
             scope.add_source(name.clone(), expr.clone(), true);
             scope.derived_table_scopes.push(derived_scope);
+        }
+        Expression::JoinedTable(joined) => {
+            if let Some(alias) = &joined.alias {
+                let mut derived_scope = scope.branch(expr.clone(), ScopeType::DerivedTable);
+                build_scope_impl(expr, &mut derived_scope);
+                scope.add_source(alias.name.clone(), expr.clone(), true);
+                scope.derived_table_scopes.push(derived_scope);
+            } else {
+                add_join_group_to_scope(joined, scope);
+            }
         }
         Expression::Unnest(unnest) => {
             if let Some(alias) = &unnest.alias {
@@ -1356,6 +1380,31 @@ mod tests {
     fn parse_and_build_scope(sql: &str) -> Scope {
         let ast = Parser::parse_sql(sql).expect("Failed to parse SQL");
         build_scope(&ast[0])
+    }
+
+    #[test]
+    fn unaliased_join_group_exposes_all_members() {
+        let scope = parse_and_build_scope(
+            "SELECT a.id FROM alpha a JOIN (beta b JOIN gamma c ON b.id = c.id) ON a.id = b.id",
+        );
+        assert!(scope.sources.contains_key("a"));
+        assert!(scope.sources.contains_key("b"));
+        assert!(scope.sources.contains_key("c"));
+    }
+
+    #[test]
+    fn aliased_join_group_hides_member_bindings_from_its_parent() {
+        let scope = parse_and_build_scope(
+            "SELECT grouped.id FROM (beta b JOIN gamma c ON b.id = c.id) AS grouped",
+        );
+        assert_eq!(scope.sources.len(), 1);
+        assert!(scope.sources.contains_key("grouped"));
+        let group = scope
+            .derived_table_scopes
+            .first()
+            .expect("join group scope");
+        assert!(group.sources.contains_key("b"));
+        assert!(group.sources.contains_key("c"));
     }
 
     #[test]
