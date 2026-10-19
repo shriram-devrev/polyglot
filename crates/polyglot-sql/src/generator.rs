@@ -24886,7 +24886,12 @@ impl Generator {
         let use_arrow = f.arrow_syntax && self.dialect_supports_json_arrow();
 
         if use_arrow {
-            // Output arrow syntax: expr -> path or expr ->> path
+            // DuckDB's JSON -> binds below comparisons and boolean operators.
+            let wrap_arrow =
+                self.config.dialect == Some(DialectType::DuckDB) && name == "JSON_EXTRACT";
+            if wrap_arrow {
+                self.write("(");
+            }
             self.generate_expression(&f.this)?;
             if name == "JSON_EXTRACT_SCALAR" || name == "JSON_EXTRACT_PATH_TEXT" {
                 self.write(" ->> ");
@@ -24894,6 +24899,9 @@ impl Generator {
                 self.write(" -> ");
             }
             self.generate_expression(&f.path)?;
+            if wrap_arrow {
+                self.write(")");
+            }
             return Ok(());
         }
 
