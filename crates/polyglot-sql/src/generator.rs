@@ -26520,6 +26520,22 @@ impl Generator {
         self.generate_expression(&between.high)
     }
 
+    fn generate_is_operand(&mut self, expression: &Expression) -> Result<()> {
+        // IS binds more tightly than boolean connectors and prefix NOT.
+        let grouped = matches!(
+            expression,
+            Expression::And(_) | Expression::Or(_) | Expression::Xor(_) | Expression::Not(_)
+        );
+        if grouped {
+            self.write("(");
+        }
+        self.generate_expression(expression)?;
+        if grouped {
+            self.write(")");
+        }
+        Ok(())
+    }
+
     fn generate_is_null(&mut self, is_null: &IsNull) -> Result<()> {
         // Generic mode: normalize IS NOT NULL to prefix form: NOT x IS NULL
         let use_prefix_not = is_null.not
@@ -26530,13 +26546,13 @@ impl Generator {
             // NOT x IS NULL (generic normalization and NOTNULL postfix form)
             self.write_keyword("NOT");
             self.write_space();
-            self.generate_expression(&is_null.this)?;
+            self.generate_is_operand(&is_null.this)?;
             self.write_space();
             self.write_keyword("IS");
             self.write_space();
             self.write_keyword("NULL");
         } else {
-            self.generate_expression(&is_null.this)?;
+            self.generate_is_operand(&is_null.this)?;
             self.write_space();
             self.write_keyword("IS");
             if is_null.not {
@@ -26550,7 +26566,7 @@ impl Generator {
     }
 
     fn generate_is_true(&mut self, is_true: &IsTrueFalse) -> Result<()> {
-        self.generate_expression(&is_true.this)?;
+        self.generate_is_operand(&is_true.this)?;
         self.write_space();
         self.write_keyword("IS");
         if is_true.not {
@@ -26563,7 +26579,7 @@ impl Generator {
     }
 
     fn generate_is_false(&mut self, is_false: &IsTrueFalse) -> Result<()> {
-        self.generate_expression(&is_false.this)?;
+        self.generate_is_operand(&is_false.this)?;
         self.write_space();
         self.write_keyword("IS");
         if is_false.not {
