@@ -157,3 +157,17 @@ fn generated_json_arrows_keep_their_operand_boundary() {
         );
     }
 }
+
+#[test]
+fn standalone_json_arrows_keep_native_rendering() {
+    for sql in [
+        "SELECT payload -> '$.a'",
+        "SELECT payload -> ['$.a', '$.b']",
+        "SELECT payload -> '$.a' -> '$[0]'",
+        "SELECT (payload -> '$.a') = other",
+        "SELECT (payload -> '$.a')[1]",
+    ] {
+        let expression = parse_one(sql, DialectType::DuckDB).unwrap();
+        assert_eq!(generate(&expression, DialectType::DuckDB).unwrap(), sql);
+    }
+}

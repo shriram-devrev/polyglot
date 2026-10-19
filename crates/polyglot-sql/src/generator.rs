@@ -24886,12 +24886,6 @@ impl Generator {
         let use_arrow = f.arrow_syntax && self.dialect_supports_json_arrow();
 
         if use_arrow {
-            // DuckDB's JSON -> binds below comparisons and boolean operators.
-            let wrap_arrow =
-                self.config.dialect == Some(DialectType::DuckDB) && name == "JSON_EXTRACT";
-            if wrap_arrow {
-                self.write("(");
-            }
             self.generate_expression(&f.this)?;
             if name == "JSON_EXTRACT_SCALAR" || name == "JSON_EXTRACT_PATH_TEXT" {
                 self.write(" ->> ");
@@ -24899,9 +24893,6 @@ impl Generator {
                 self.write(" -> ");
             }
             self.generate_expression(&f.path)?;
-            if wrap_arrow {
-                self.write(")");
-            }
             return Ok(());
         }
 
@@ -25731,6 +25722,23 @@ impl Generator {
         Ok(())
     }
 
+    fn is_low_precedence_json_arrow(dialect: Option<DialectType>, expression: &Expression) -> bool {
+        dialect == Some(DialectType::DuckDB)
+            && matches!(expression, Expression::JsonExtract(f) if f.arrow_syntax)
+    }
+
+    fn generate_json_arrow_operand(&mut self, expression: &Expression) -> Result<()> {
+        let wrap = Self::is_low_precedence_json_arrow(self.config.dialect, expression);
+        if wrap {
+            self.write("(");
+        }
+        self.generate_expression(expression)?;
+        if wrap {
+            self.write(")");
+        }
+        Ok(())
+    }
+
     fn generate_binary_op(&mut self, op: &BinaryOp, operator: &str) -> Result<()> {
         self.generate_binary_op_with_precedence(op, operator, None)
     }
@@ -25750,14 +25758,15 @@ impl Generator {
         operator: &str,
         infix_operator: Option<InfixOperator>,
     ) -> Result<()> {
-        let wrap_left = infix_operator.is_some_and(|parent| {
-            Self::infix_operand_needs_parentheses(
-                self.config.dialect,
-                parent,
-                &op.left,
-                OperandSide::Left,
-            )
-        });
+        let wrap_left = Self::is_low_precedence_json_arrow(self.config.dialect, &op.left)
+            || infix_operator.is_some_and(|parent| {
+                Self::infix_operand_needs_parentheses(
+                    self.config.dialect,
+                    parent,
+                    &op.left,
+                    OperandSide::Left,
+                )
+            });
         if wrap_left {
             self.write("(");
         }
@@ -25833,14 +25842,15 @@ impl Generator {
             self.write_formatted_comment(comment);
         }
         self.write_space();
-        let wrap_right = infix_operator.is_some_and(|parent| {
-            Self::infix_operand_needs_parentheses(
-                self.config.dialect,
-                parent,
-                &op.right,
-                OperandSide::Right,
-            )
-        });
+        let wrap_right = Self::is_low_precedence_json_arrow(self.config.dialect, &op.right)
+            || infix_operator.is_some_and(|parent| {
+                Self::infix_operand_needs_parentheses(
+                    self.config.dialect,
+                    parent,
+                    &op.right,
+                    OperandSide::Right,
+                )
+            });
         if wrap_right {
             self.write("(");
         }
@@ -26016,6 +26026,11 @@ impl Generator {
     ) -> bool {
         if matches!(child, Expression::Paren(_)) {
             return false;
+        }
+
+        // DuckDB JSON -> binds below comparison and boolean operators.
+        if Self::is_low_precedence_json_arrow(dialect, child) {
+            return true;
         }
 
         // Bitwise precedence differs between dialects. Group these operands
@@ -26351,8 +26366,9 @@ impl Generator {
         }
         // Function-like AST nodes such as MOD and DIV can render as infix
         // operators. Preserve their grouping under a symbolic unary operator.
-        let needs_parens = matches!(operator, "-" | "~")
-            && Self::infix_operator(self.config.dialect, &op.this).is_some();
+        let needs_parens = Self::is_low_precedence_json_arrow(self.config.dialect, &op.this)
+            || (matches!(operator, "-" | "~")
+                && Self::infix_operator(self.config.dialect, &op.this).is_some());
         if needs_parens {
             self.write("(");
         }
@@ -26375,7 +26391,7 @@ impl Generator {
             self.write_keyword("NOT");
             self.write_space();
         }
-        self.generate_expression(&in_expr.this)?;
+        self.generate_json_arrow_operand(&in_expr.this)?;
         if in_expr.global {
             self.write_space();
             self.write_keyword("GLOBAL");
@@ -26505,7 +26521,7 @@ impl Generator {
             self.write_keyword("NOT");
             self.write_space();
         }
-        self.generate_expression(&between.this)?;
+        self.generate_json_arrow_operand(&between.this)?;
         if between.not && !use_prefix_not {
             self.write_space();
             self.write_keyword("NOT");
@@ -26521,11 +26537,11 @@ impl Generator {
             }
         }
         self.write_space();
-        self.generate_expression(&between.low)?;
+        self.generate_json_arrow_operand(&between.low)?;
         self.write_space();
         self.write_keyword("AND");
         self.write_space();
-        self.generate_expression(&between.high)
+        self.generate_json_arrow_operand(&between.high)
     }
 
     fn generate_is_null(&mut self, is_null: &IsNull) -> Result<()> {
@@ -26538,13 +26554,13 @@ impl Generator {
             // NOT x IS NULL (generic normalization and NOTNULL postfix form)
             self.write_keyword("NOT");
             self.write_space();
-            self.generate_expression(&is_null.this)?;
+            self.generate_json_arrow_operand(&is_null.this)?;
             self.write_space();
             self.write_keyword("IS");
             self.write_space();
             self.write_keyword("NULL");
         } else {
-            self.generate_expression(&is_null.this)?;
+            self.generate_json_arrow_operand(&is_null.this)?;
             self.write_space();
             self.write_keyword("IS");
             if is_null.not {
@@ -26558,7 +26574,7 @@ impl Generator {
     }
 
     fn generate_is_true(&mut self, is_true: &IsTrueFalse) -> Result<()> {
-        self.generate_expression(&is_true.this)?;
+        self.generate_json_arrow_operand(&is_true.this)?;
         self.write_space();
         self.write_keyword("IS");
         if is_true.not {
@@ -26571,7 +26587,7 @@ impl Generator {
     }
 
     fn generate_is_false(&mut self, is_false: &IsTrueFalse) -> Result<()> {
-        self.generate_expression(&is_false.this)?;
+        self.generate_json_arrow_operand(&is_false.this)?;
         self.write_space();
         self.write_keyword("IS");
         if is_false.not {
@@ -26584,7 +26600,7 @@ impl Generator {
     }
 
     fn generate_is_json(&mut self, is_json: &IsJson) -> Result<()> {
-        self.generate_expression(&is_json.this)?;
+        self.generate_json_arrow_operand(&is_json.this)?;
         self.write_space();
         self.write_keyword("IS");
         if is_json.negated {
@@ -26621,11 +26637,11 @@ impl Generator {
     }
 
     fn generate_is(&mut self, is_expr: &BinaryOp) -> Result<()> {
-        self.generate_expression(&is_expr.left)?;
+        self.generate_json_arrow_operand(&is_expr.left)?;
         self.write_space();
         self.write_keyword("IS");
         self.write_space();
-        self.generate_expression(&is_expr.right)
+        self.generate_json_arrow_operand(&is_expr.right)
     }
 
     fn generate_exists(&mut self, exists: &Exists) -> Result<()> {
