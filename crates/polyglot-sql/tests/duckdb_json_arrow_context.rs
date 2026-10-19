@@ -123,3 +123,37 @@ fn other_dialects_keep_arrow_lambda_support() {
         );
     }
 }
+
+fn projected(sql: &str) -> Expression {
+    let Expression::Select(select) = parse_one(sql, DialectType::DuckDB).unwrap() else {
+        panic!("expected SELECT")
+    };
+    select.expressions[0].clone()
+}
+
+#[test]
+fn generated_json_arrows_keep_their_operand_boundary() {
+    use polyglot_sql::expressions::{BinaryOp, IsNull};
+    for json in ["payload -> '$.a'", "payload -> ['$.a', '$.b']"] {
+        let extraction = projected(&format!("SELECT {json}"));
+        let comparison = Expression::Eq(Box::new(BinaryOp::new(
+            extraction.clone(),
+            projected("SELECT other"),
+        )));
+        let generated = generate(&comparison, DialectType::DuckDB).unwrap();
+        assert_eq!(generated, format!("({json}) = other"));
+        assert!(matches!(
+            projected(&format!("SELECT {generated}")),
+            Expression::Eq(_)
+        ));
+        let null_test = Expression::IsNull(Box::new(IsNull {
+            this: extraction,
+            not: false,
+            postfix_form: false,
+        }));
+        assert_eq!(
+            generate(&null_test, DialectType::DuckDB).unwrap(),
+            format!("({json}) IS NULL")
+        );
+    }
+}
