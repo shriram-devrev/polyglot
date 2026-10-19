@@ -31587,7 +31587,9 @@ impl Parser {
         if self.check(TokenType::RParen) {
             self.skip(); // consume )
                          // Check for lambda: () -> body
-            if self.match_token(TokenType::Arrow) || self.match_token(TokenType::FArrow) {
+            if self.config.dialect != Some(crate::dialects::DialectType::DuckDB)
+                && (self.match_token(TokenType::Arrow) || self.match_token(TokenType::FArrow))
+            {
                 let body = self.parse_expression()?;
                 return Ok(Expression::Lambda(Box::new(LambdaExpr {
                     parameters: Vec::new(),
@@ -31971,7 +31973,9 @@ impl Parser {
 
             self.expect(TokenType::RParen)?;
 
-            if self.match_token(TokenType::Arrow) {
+            if self.config.dialect != Some(crate::dialects::DialectType::DuckDB)
+                && self.match_token(TokenType::Arrow)
+            {
                 let expression_count = expressions.len();
                 let parameters: Vec<Identifier> = expressions
                     .into_iter()
@@ -32059,7 +32063,9 @@ impl Parser {
         let mut paren_comments = lparen_comments.clone();
         paren_comments.extend_from_slice(self.previous_trailing_comments());
 
-        if self.match_token(TokenType::Arrow) {
+        if self.config.dialect != Some(crate::dialects::DialectType::DuckDB)
+            && self.match_token(TokenType::Arrow)
+        {
             let parameters = if let Expression::Column(c) = first_expr {
                 vec![c.name]
             } else if let Expression::Identifier(id) = first_expr {
@@ -32342,7 +32348,7 @@ impl Parser {
                 let args = if self.check(TokenType::RParen) {
                     Vec::new()
                 } else {
-                    self.parse_function_arguments()?
+                    self.parse_function_arguments_for(Some(&col_ident.name))?
                 };
                 self.expect(TokenType::RParen)?;
                 let this = Self::parsed_column(Column {
@@ -32387,6 +32393,7 @@ impl Parser {
                 self.config.dialect,
                 Some(crate::dialects::DialectType::PostgreSQL)
                     | Some(crate::dialects::DialectType::Redshift)
+                    | Some(crate::dialects::DialectType::DuckDB)
             )
             && !self
                 .peek_nth(1)
@@ -33580,6 +33587,8 @@ impl Parser {
                             trailing_comments: Vec::new(),
                             span: None,
                         })
+                    } else if let Some(lambda) = self.parse_function_lambda()? {
+                        lambda
                     } else {
                         self.parse_expression()?
                     };
@@ -38820,7 +38829,7 @@ impl Parser {
                     .unwrap_or(false)
             {
                 // Parse *COLUMNS(...) as a function argument
-                (self.parse_function_arguments()?, false)
+                (self.parse_function_arguments_for(Some(name))?, false)
             } else {
                 // Regular star: parse star modifiers like EXCLUDE/EXCEPT/REPLACE/RENAME
                 // e.g., COLUMNS(* EXCLUDE (empid, dept))
@@ -38829,7 +38838,7 @@ impl Parser {
                 let mut args = vec![Expression::Star(star)];
                 // ClickHouse: func(*, col1, col2) — star followed by more args
                 if self.match_token(TokenType::Comma) {
-                    let rest = self.parse_function_arguments()?;
+                    let rest = self.parse_function_arguments_for(Some(name))?;
                     args.extend(rest);
                 }
                 (args, false)
@@ -38841,12 +38850,12 @@ impl Parser {
             // DISTINCT as aggregate modifier: func(DISTINCT expr)
             // Not when followed by comma or rparen — then DISTINCT is used as an identifier value
             self.skip(); // consume DISTINCT
-            (self.parse_function_arguments()?, true)
+            (self.parse_function_arguments_for(Some(name))?, true)
         } else if is_known_agg && self.match_token(TokenType::All) {
             // ALL is the default quantifier, just consume it
-            (self.parse_function_arguments()?, false)
+            (self.parse_function_arguments_for(Some(name))?, false)
         } else {
-            (self.parse_function_arguments()?, false)
+            (self.parse_function_arguments_for(Some(name))?, false)
         };
 
         // For known aggregate functions, check for IGNORE NULLS, ORDER BY, LIMIT inside parens
@@ -39113,7 +39122,9 @@ impl Parser {
                     self.current = saved_pos;
                     self.parse_expression()?
                 }
-            } else if self.match_token(TokenType::Arrow) {
+            } else if self.config.dialect != Some(crate::dialects::DialectType::DuckDB)
+                && self.match_token(TokenType::Arrow)
+            {
                 let body = self.parse_expression()?;
                 Expression::Lambda(Box::new(LambdaExpr {
                     parameters: vec![Identifier::new(ident_name).with_span(ident_token.span)],
@@ -39224,6 +39235,25 @@ impl Parser {
     /// Parse function arguments, handling named arguments (name => value, name := value)
     /// and TABLE/MODEL prefixed arguments (BigQuery)
     fn parse_function_arguments(&mut self) -> Result<Vec<Expression>> {
+        self.parse_function_arguments_for(None)
+    }
+
+    fn parse_function_arguments_for(&mut self, function: Option<&str>) -> Result<Vec<Expression>> {
+        // DuckDB also uses -> for JSON extraction, including path lists and dynamic paths.
+        // Only a function's lambda parameter can introduce an arrow lambda.
+        let lambda_index = if self.config.dialect == Some(crate::dialects::DialectType::DuckDB) {
+            match function.map(str::to_ascii_uppercase).as_deref() {
+                Some("COLUMNS") => Some(0),
+                Some(
+                    "APPLY" | "ARRAY_APPLY" | "ARRAY_FILTER" | "ARRAY_REDUCE" | "ARRAY_TRANSFORM"
+                    | "FILTER" | "LIST_APPLY" | "LIST_FILTER" | "LIST_REDUCE" | "LIST_TRANSFORM"
+                    | "REDUCE",
+                ) => Some(1),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let mut args = Vec::new();
 
         loop {
@@ -39255,7 +39285,15 @@ impl Parser {
                 continue;
             }
 
-            args.push(self.parse_single_function_argument()?);
+            let lambda = if lambda_index == Some(args.len()) {
+                self.parse_function_lambda()?
+            } else {
+                None
+            };
+            args.push(match lambda {
+                Some(lambda) => lambda,
+                None => self.parse_single_function_argument()?,
+            });
 
             if !self.match_token(TokenType::Comma) {
                 break;
@@ -53826,6 +53864,32 @@ impl Parser {
         Ok(None)
     }
 
+    fn parse_function_lambda(&mut self) -> Result<Option<Expression>> {
+        let start = self.current;
+        let mut parentheses: Vec<Vec<String>> = Vec::new();
+        loop {
+            if let Some(mut expression) = self.parse_lambda()? {
+                for mut comments in parentheses.into_iter().rev() {
+                    if !self.match_token(TokenType::RParen) {
+                        self.current = start;
+                        return Ok(None);
+                    }
+                    comments.extend_from_slice(self.previous_trailing_comments());
+                    expression = Expression::Paren(Box::new(Paren {
+                        this: expression,
+                        trailing_comments: comments,
+                    }));
+                }
+                return Ok(Some(expression));
+            }
+            if !self.match_token(TokenType::LParen) {
+                self.current = start;
+                return Ok(None);
+            }
+            parentheses.push(self.previous_trailing_comments().to_vec());
+        }
+    }
+
     /// parse_lambda - Ported from Python _parse_lambda
     /// Parses lambda expressions: x -> x + 1 or (x, y) -> x + y
     /// Also supports DuckDB syntax: LAMBDA x : x + 1
@@ -53875,41 +53939,24 @@ impl Parser {
             }))));
         }
 
-        // Try to parse lambda parameters
-        let parameters = if self.match_token(TokenType::LParen) {
-            // Parenthesized parameters: (x, y) -> ...
-            let mut params = Vec::new();
-            if !self.check(TokenType::RParen) {
-                loop {
-                    if let Some(ident) = self.parse_identifier()? {
-                        if let Expression::Identifier(id) = ident {
-                            params.push(id);
-                        }
-                    }
-                    if !self.match_token(TokenType::Comma) {
-                        break;
-                    }
-                }
-            }
-            if !self.match_token(TokenType::RParen) {
-                // Not a lambda, retreat
+        let parenthesized = self.match_token(TokenType::LParen);
+        let mut parameters = Vec::new();
+        while !(parenthesized && self.check(TokenType::RParen)) {
+            if !self.is_identifier_token() {
                 self.current = start_index;
                 return Ok(None);
             }
-            params
-        } else {
-            // Single parameter: x -> ...
-            if let Some(ident) = self.parse_identifier()? {
-                if let Expression::Identifier(id) = ident {
-                    vec![id]
-                } else {
-                    self.current = start_index;
-                    return Ok(None);
-                }
-            } else {
-                return Ok(None);
+            let token = self.advance();
+            let quoted = token.token_type == TokenType::QuotedIdentifier;
+            parameters.push(Self::identifier_from_token(token, quoted));
+            if !parenthesized || !self.match_token(TokenType::Comma) {
+                break;
             }
-        };
+        }
+        if parenthesized && !self.match_token(TokenType::RParen) {
+            self.current = start_index;
+            return Ok(None);
+        }
 
         // Check for arrow operator
         if self.match_token(TokenType::Arrow) || self.match_token(TokenType::FArrow) {
@@ -60051,7 +60098,11 @@ impl Parser {
         if self.match_text_seq(&["COLUMNS"]) && self.check(TokenType::LParen) {
             // Parse the COLUMNS function arguments
             self.expect(TokenType::LParen)?;
-            let this = self.parse_expression()?;
+            let this = if let Some(lambda) = self.parse_function_lambda()? {
+                lambda
+            } else {
+                self.parse_expression()?
+            };
             self.expect(TokenType::RParen)?;
 
             // Return a Columns expression with unpack=true (since it came from * COLUMNS())
