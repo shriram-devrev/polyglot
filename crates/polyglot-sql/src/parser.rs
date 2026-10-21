@@ -6117,9 +6117,7 @@ impl Parser {
                             if self.check(TokenType::RParen) {
                                 break;
                             }
-                            aliases.push(
-                                self.parse_unquoted_identifier(Self::expect_identifier_or_keyword)?,
-                            );
+                            aliases.push(self.expect_identifier_or_keyword_with_quoted()?);
                             if !self.match_token(TokenType::Comma) {
                                 break;
                             }
@@ -6244,8 +6242,7 @@ impl Parser {
             let mut column_aliases = if self.match_token(TokenType::LParen) {
                 let mut aliases = Vec::new();
                 loop {
-                    aliases
-                        .push(self.parse_unquoted_identifier(Self::expect_identifier_or_keyword)?);
+                    aliases.push(self.expect_identifier_or_keyword_with_quoted()?);
                     if !self.match_token(TokenType::Comma) {
                         break;
                     }
