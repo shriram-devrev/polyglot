@@ -33741,7 +33741,10 @@ impl Generator {
             self.generate_expression(&e.this)?;
             if let Some(alias) = &e.alias {
                 self.write_space();
-                self.write(alias);
+                self.generate_identifier(&Identifier {
+                    quoted: e.alias_quoted,
+                    ..Identifier::new(alias)
+                })?;
             }
         } else {
             // LATERAL subquery/function [WITH ORDINALITY] [AS alias(columns)]
@@ -33756,14 +33759,20 @@ impl Generator {
                 self.write_space();
                 self.write_keyword("AS");
                 self.write_space();
-                self.write(alias);
+                self.generate_identifier(&Identifier {
+                    quoted: e.alias_quoted,
+                    ..Identifier::new(alias)
+                })?;
                 if !e.column_aliases.is_empty() {
                     self.write("(");
                     for (i, col) in e.column_aliases.iter().enumerate() {
                         if i > 0 {
                             self.write(", ");
                         }
-                        self.write(col);
+                        self.generate_identifier(&Identifier {
+                            quoted: e.column_aliases_quoted.get(i).copied().unwrap_or(false),
+                            ..Identifier::new(col)
+                        })?;
                     }
                     self.write(")");
                 }

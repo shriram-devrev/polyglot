@@ -4466,7 +4466,9 @@ impl Parser {
                     && !self.check(TokenType::Order)
                     && !self.check(TokenType::Limit)
                     && !self.check(TokenType::Semicolon)
-                    && (self.check(TokenType::Identifier) || self.check(TokenType::Var))
+                    && (self.check(TokenType::Identifier)
+                        || self.check(TokenType::Var)
+                        || self.check(TokenType::QuotedIdentifier))
                 {
                     Some(self.expect_identifier_or_keyword_with_quoted()?)
                 } else {
@@ -4476,10 +4478,13 @@ impl Parser {
                 let alias = alias_ident.map(|id| id.name);
 
                 // Parse column aliases: (col1, col2, ...)
+                let mut column_aliases_quoted = Vec::new();
                 let column_aliases = if alias.is_some() && self.match_token(TokenType::LParen) {
                     let mut cols = Vec::new();
                     loop {
-                        cols.push(self.expect_identifier_or_keyword()?);
+                        let column = self.expect_identifier_or_keyword_with_quoted()?;
+                        column_aliases_quoted.push(column.quoted);
+                        cols.push(column.name);
                         if !self.match_token(TokenType::Comma) {
                             break;
                         }
@@ -4489,6 +4494,9 @@ impl Parser {
                 } else {
                     Vec::new()
                 };
+                if !column_aliases_quoted.iter().any(|quoted| *quoted) {
+                    column_aliases_quoted.clear();
+                }
 
                 Expression::Lateral(Box::new(Lateral {
                     this: Box::new(func_expr),
@@ -4499,6 +4507,7 @@ impl Parser {
                     cross_apply: None,
                     ordinality,
                     column_aliases,
+                    column_aliases_quoted,
                 }))
             }
         } else if self.match_token(TokenType::LParen) {
@@ -54013,22 +54022,28 @@ impl Parser {
 
         // Parse optional alias
         let alias = if self.match_token(TokenType::As) {
-            Some(self.expect_identifier()?)
-        } else if self.check(TokenType::Identifier) && !self.check_keyword() {
-            Some(self.expect_identifier()?)
+            Some(self.expect_identifier_or_keyword_with_quoted()?)
+        } else if (self.check(TokenType::Identifier) && !self.check_keyword())
+            || self.check(TokenType::QuotedIdentifier)
+        {
+            Some(self.expect_identifier_or_keyword_with_quoted()?)
         } else {
             None
         };
+        let alias_quoted = alias.as_ref().is_some_and(|alias| alias.quoted);
+        let alias = alias.map(|alias| alias.name);
 
         // Parse optional column aliases: AS alias(col1, col2, ...)
+        let mut column_aliases_quoted = Vec::new();
         let column_aliases = if alias.is_some() && self.match_token(TokenType::LParen) {
             let mut cols = Vec::new();
             loop {
                 if self.check(TokenType::RParen) {
                     break;
                 }
-                let col = self.expect_identifier()?;
-                cols.push(col);
+                let column = self.expect_identifier_or_keyword_with_quoted()?;
+                column_aliases_quoted.push(column.quoted);
+                cols.push(column.name);
                 if !self.match_token(TokenType::Comma) {
                     break;
                 }
@@ -54038,6 +54053,9 @@ impl Parser {
         } else {
             Vec::new()
         };
+        if !column_aliases_quoted.iter().any(|quoted| *quoted) {
+            column_aliases_quoted.clear();
+        }
 
         Ok(Some(Expression::Lateral(Box::new(Lateral {
             this: Box::new(this),
@@ -54056,10 +54074,11 @@ impl Parser {
                 None
             },
             alias,
-            alias_quoted: false,
+            alias_quoted,
             cross_apply: None,
             ordinality: None,
             column_aliases,
+            column_aliases_quoted,
         }))))
     }
 

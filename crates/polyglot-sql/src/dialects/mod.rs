@@ -8828,6 +8828,7 @@ impl Dialect {
                 cross_apply: None,
                 ordinality: None,
                 column_aliases: vec![],
+                column_aliases_quoted: vec![],
             }));
 
             // Remove the original join and add to FROM expressions

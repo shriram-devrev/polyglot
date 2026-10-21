@@ -11274,6 +11274,9 @@ pub struct Lateral {
     /// Column aliases for the lateral expression (e.g., LATERAL func() AS alias(col1, col2))
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub column_aliases: Vec<String>,
+    /// Quoting of each column alias, parallel to `column_aliases`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub column_aliases_quoted: Vec<bool>,
 }
 
 /// TableFromRows
