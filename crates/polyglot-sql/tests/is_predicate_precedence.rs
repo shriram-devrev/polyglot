@@ -87,3 +87,70 @@ fn atomic_and_already_parenthesized_operands_keep_their_shape() {
         );
     }
 }
+
+#[test]
+fn builder_is_predicates_preserve_boolean_operands() {
+    use polyglot_sql::builder::col;
+    for operand in [col("a").or(col("b")), col("a").and(col("b"))] {
+        let expression = operand.clone().is_null().0;
+        let output = generate(&expression, DialectType::DuckDB).unwrap();
+        assert_eq!(
+            projected(&format!("SELECT {output}")),
+            projected(&format!(
+                "SELECT ({}) IS NULL",
+                generate(&operand.0, DialectType::DuckDB).unwrap()
+            ))
+        );
+    }
+}
+
+#[test]
+fn null_safe_predicates_preserve_both_boolean_operands() {
+    use polyglot_sql::expressions::BinaryOp;
+    for distinct in [false, true] {
+        let operands = Box::new(BinaryOp::new(
+            projected("SELECT a OR b"),
+            projected("SELECT c AND d"),
+        ));
+        let expression = if distinct {
+            Expression::NullSafeNeq(operands)
+        } else {
+            Expression::NullSafeEq(operands)
+        };
+        let output = generate(&expression, DialectType::DuckDB).unwrap();
+        let expected = format!(
+            "SELECT (a OR b) IS {}DISTINCT FROM (c AND d)",
+            if distinct { "" } else { "NOT " }
+        );
+        assert_eq!(projected(&format!("SELECT {output}")), projected(&expected));
+    }
+}
+
+#[test]
+fn clickhouse_not_wraps_the_null_predicate() {
+    let Expression::Select(select) =
+        parse_one("SELECT NOT a IS NULL", DialectType::ClickHouse).unwrap()
+    else {
+        panic!("expected SELECT")
+    };
+    assert!(matches!(&select.expressions[0], Expression::Not(_)));
+}
+
+#[test]
+fn json_predicates_preserve_boolean_operands() {
+    use polyglot_sql::expressions::IsJson;
+    for operand in ["a OR b", "a AND b", "NOT a"] {
+        for negated in [false, true] {
+            let expression = Expression::IsJson(Box::new(IsJson {
+                this: projected(&format!("SELECT {operand}")),
+                json_type: None,
+                unique_keys: None,
+                negated,
+            }));
+            assert_eq!(
+                generate(&expression, DialectType::PostgreSQL).unwrap(),
+                format!("({operand}) IS {}JSON", if negated { "NOT " } else { "" })
+            );
+        }
+    }
+}

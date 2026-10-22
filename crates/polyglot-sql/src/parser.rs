@@ -30624,12 +30624,7 @@ impl Parser {
 
     /// Parse NOT expressions
     fn parse_not(&mut self) -> Result<Expression> {
-        if !self.check(TokenType::Not)
-            || matches!(
-                self.config.dialect,
-                Some(crate::dialects::DialectType::ClickHouse)
-            )
-        {
+        if !self.check(TokenType::Not) {
             return self.parse_comparison();
         }
 
@@ -32444,9 +32439,7 @@ impl Parser {
                     | TokenType::Tilde
                     | TokenType::DPipeSlash
                     | TokenType::PipeSlash
-            ) && !(token == TokenType::Not
-                && self.config.dialect == Some(crate::dialects::DialectType::ClickHouse))
-            {
+            ) {
                 break;
             }
             let _scope = self.enter_parser_depth(prefixes.len() + 1)?;
