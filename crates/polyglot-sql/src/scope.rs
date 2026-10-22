@@ -700,7 +700,6 @@ fn build_scope_impl(expression: &Expression, current_scope: &mut Scope) {
         Expression::JoinedTable(joined) => {
             let mut preceding_sources = HashSet::new();
             add_join_group_to_scope(joined, current_scope, &mut preceding_sources);
-            collect_subqueries(expression, current_scope);
         }
         Expression::Union(union) => {
             if let Some(with) = &union.with {
@@ -805,6 +804,12 @@ fn add_join_group_to_scope(
     add_relation_to_scope(&joined.left, scope, preceding_sources);
     for join in &joined.joins {
         add_relation_to_scope(&join.this, scope, preceding_sources);
+        if let Some(condition) = &join.on {
+            collect_subqueries_in_expr(condition, scope);
+        }
+        if let Some(condition) = &join.match_condition {
+            collect_subqueries_in_expr(condition, scope);
+        }
     }
     for lateral_view in &joined.lateral_views {
         add_lateral_view_to_scope(lateral_view, scope);
@@ -919,7 +924,10 @@ fn add_table_to_scope(
             scope.add_virtual_source(alias.alias.name.clone(), expr.clone());
             Some(alias.alias.name.clone())
         }
-        Expression::Alias(alias) if is_query_like_relation(&alias.this) => {
+        Expression::Alias(alias)
+            if is_query_like_relation(&alias.this)
+                || matches!(&alias.this, Expression::JoinedTable(_)) =>
+        {
             let outer_columns = alias
                 .column_aliases
                 .iter()
