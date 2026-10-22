@@ -25724,7 +25724,7 @@ impl Generator {
 
     fn is_low_precedence_json_arrow(dialect: Option<DialectType>, expression: &Expression) -> bool {
         dialect == Some(DialectType::DuckDB)
-            && matches!(expression, Expression::JsonExtract(f) if f.arrow_syntax)
+            && matches!(expression, Expression::JsonExtract(f) | Expression::JsonExtractScalar(f) if f.arrow_syntax)
     }
 
     fn generate_json_arrow_operand(&mut self, expression: &Expression) -> Result<()> {

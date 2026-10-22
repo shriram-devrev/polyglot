@@ -34182,7 +34182,7 @@ impl Parser {
                 let args = if self.check(TokenType::RParen) {
                     Vec::new()
                 } else {
-                    self.parse_function_arguments_for(Some(&col_ident.name))?
+                    self.parse_method_arguments_for(&col_ident.name)?
                 };
                 self.expect(TokenType::RParen)?;
                 let this = Self::parsed_column(Column {
@@ -36288,7 +36288,7 @@ impl Parser {
                     let args = if self.check(TokenType::RParen) {
                         Vec::new()
                     } else {
-                        self.parse_expression_list()?
+                        self.parse_method_arguments_for(&col_ident.name)?
                     };
                     self.expect(TokenType::RParen)?;
                     let method_call = self.parse_method_call_expression(
@@ -41623,21 +41623,59 @@ impl Parser {
     }
 
     fn parse_function_arguments_for(&mut self, function: Option<&str>) -> Result<Vec<Expression>> {
-        // DuckDB also uses -> for JSON extraction, including path lists and dynamic paths.
-        // Only a function's lambda parameter can introduce an arrow lambda.
+        self.parse_function_arguments_in_context(function, false)
+    }
+
+    fn parse_method_arguments_for(&mut self, method: &str) -> Result<Vec<Expression>> {
+        self.parse_function_arguments_in_context(Some(method), true)
+    }
+
+    fn lambda_argument(mut expression: &Expression) -> Option<&LambdaExpr> {
+        while let Expression::Paren(paren) = expression {
+            expression = &paren.this;
+        }
+        match expression {
+            Expression::Lambda(lambda) => Some(lambda),
+            _ => None,
+        }
+    }
+
+    fn parse_function_arguments_in_context(
+        &mut self,
+        function: Option<&str>,
+        receiver: bool,
+    ) -> Result<Vec<Expression>> {
+        // DuckDB uses -> for both JSON paths and function lambdas. A dot call
+        // can supply the list as its receiver instead of its first argument.
         let lambda_index = if self.config.dialect == Some(crate::dialects::DialectType::DuckDB) {
-            match function.map(str::to_ascii_uppercase).as_deref() {
-                Some("COLUMNS") => Some(0),
-                Some(
-                    "APPLY" | "ARRAY_APPLY" | "ARRAY_FILTER" | "ARRAY_REDUCE" | "ARRAY_TRANSFORM"
-                    | "FILTER" | "LIST_APPLY" | "LIST_FILTER" | "LIST_REDUCE" | "LIST_TRANSFORM"
-                    | "REDUCE",
-                ) => Some(1),
-                _ => None,
-            }
+            function.and_then(|name| {
+                if name.eq_ignore_ascii_case("COLUMNS") {
+                    Some(0)
+                } else if [
+                    "APPLY",
+                    "ARRAY_APPLY",
+                    "ARRAY_FILTER",
+                    "ARRAY_REDUCE",
+                    "ARRAY_TRANSFORM",
+                    "FILTER",
+                    "LIST_APPLY",
+                    "LIST_FILTER",
+                    "LIST_REDUCE",
+                    "LIST_TRANSFORM",
+                    "REDUCE",
+                ]
+                .iter()
+                .any(|candidate| name.eq_ignore_ascii_case(candidate))
+                {
+                    Some(1)
+                } else {
+                    None
+                }
+            })
         } else {
             None
         };
+        let start = self.current;
         let mut args = Vec::new();
 
         loop {
@@ -41669,7 +41707,14 @@ impl Parser {
                 continue;
             }
 
-            let lambda = if lambda_index == Some(args.len()) {
+            let receiver_reduction = receiver
+                && args
+                    .first()
+                    .and_then(Self::lambda_argument)
+                    .is_some_and(|lambda| lambda.parameters.len() > 1);
+            let lambda = if (lambda_index == Some(args.len()) && !receiver_reduction)
+                || (receiver && lambda_index == Some(1) && args.is_empty())
+            {
                 self.parse_function_lambda()?
             } else {
                 None
@@ -41713,6 +41758,17 @@ impl Parser {
                     break;
                 }
             }
+        }
+
+        // In schema.fn(json -> path, x -> body), the first arrow is JSON.
+        // Reparse without a receiver once the second argument proves that form.
+        if receiver
+            && lambda_index == Some(1)
+            && args.first().and_then(Self::lambda_argument).is_some()
+            && args.get(1).and_then(Self::lambda_argument).is_some()
+        {
+            self.current = start;
+            return self.parse_function_arguments_for(function);
         }
 
         Ok(args)
@@ -42527,7 +42583,7 @@ impl Parser {
                         let args = if self.check(TokenType::RParen) {
                             Vec::new()
                         } else {
-                            self.parse_function_arguments()?
+                            self.parse_method_arguments_for(&ident.name)?
                         };
                         self.expect(TokenType::RParen)?;
                         // Create a method call expression (DotAccess with function call)

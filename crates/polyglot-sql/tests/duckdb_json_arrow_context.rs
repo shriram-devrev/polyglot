@@ -134,7 +134,11 @@ fn projected(sql: &str) -> Expression {
 #[test]
 fn generated_json_arrows_keep_their_operand_boundary() {
     use polyglot_sql::expressions::{BinaryOp, IsNull};
-    for json in ["payload -> '$.a'", "payload -> ['$.a', '$.b']"] {
+    for json in [
+        "payload -> '$.a'",
+        "payload -> ['$.a', '$.b']",
+        "payload ->> '$.a'",
+    ] {
         let extraction = projected(&format!("SELECT {json}"));
         let comparison = Expression::Eq(Box::new(BinaryOp::new(
             extraction.clone(),
@@ -170,4 +174,41 @@ fn standalone_json_arrows_keep_native_rendering() {
         let expression = parse_one(sql, DialectType::DuckDB).unwrap();
         assert_eq!(generate(&expression, DialectType::DuckDB).unwrap(), sql);
     }
+}
+
+#[test]
+fn dot_calls_keep_their_lambda_argument_context() {
+    for receiver in ["items", "s.items", "([1, 2])"] {
+        for function in ["list_transform", "LIST_FILTER", "array_apply"] {
+            assert_shapes(
+                &format!("SELECT {receiver}.{function}(x -> x + 1) FROM samples AS s"),
+                DialectType::DuckDB,
+                0,
+                1,
+            );
+        }
+        assert_shapes(
+            &format!("SELECT {receiver}.list_reduce((x, y) -> x + y, 0) FROM samples AS s"),
+            DialectType::DuckDB,
+            0,
+            1,
+        );
+    }
+    for sql in [
+        "SELECT main.list_transform(payload -> '$.items', x -> x) FROM samples",
+        "SELECT main.list_reduce(payload -> '$.items', (x, y) -> x + y, 0) FROM samples",
+        "SELECT list_transform(payload -> '$.items', x -> x) FROM samples",
+    ] {
+        assert_shapes(sql, DialectType::DuckDB, 1, 1);
+    }
+}
+
+#[test]
+fn receiver_reductions_keep_json_initial_values() {
+    assert_shapes(
+        "SELECT items.list_reduce((x, y) -> x + y, initial -> '$.value') FROM samples",
+        DialectType::DuckDB,
+        1,
+        1,
+    );
 }
