@@ -24193,7 +24193,7 @@ impl Generator {
     /// MySQL uses <=>, other dialects use IS NOT DISTINCT FROM
     fn generate_null_safe_eq(&mut self, op: &BinaryOp) -> Result<()> {
         use crate::dialects::DialectType;
-        self.generate_expression(&op.left)?;
+        self.generate_is_operand(&op.left)?;
         self.write_space();
         if matches!(self.config.dialect, Some(DialectType::MySQL)) {
             self.write("<=>");
@@ -24201,17 +24201,17 @@ impl Generator {
             self.write_keyword("IS NOT DISTINCT FROM");
         }
         self.write_space();
-        self.generate_expression(&op.right)?;
+        self.generate_is_operand(&op.right)?;
         Ok(())
     }
 
     /// Generate IS DISTINCT FROM (null-safe inequality)
     fn generate_null_safe_neq(&mut self, op: &BinaryOp) -> Result<()> {
-        self.generate_expression(&op.left)?;
+        self.generate_is_operand(&op.left)?;
         self.write_space();
         self.write_keyword("IS DISTINCT FROM");
         self.write_space();
-        self.generate_expression(&op.right)?;
+        self.generate_is_operand(&op.right)?;
         Ok(())
     }
 
@@ -24561,7 +24561,7 @@ impl Generator {
     }
 
     fn generate_is_json(&mut self, is_json: &IsJson) -> Result<()> {
-        self.generate_expression(&is_json.this)?;
+        self.generate_is_operand(&is_json.this)?;
         self.write_space();
         self.write_keyword("IS");
         if is_json.negated {
@@ -24598,11 +24598,11 @@ impl Generator {
     }
 
     fn generate_is(&mut self, is_expr: &BinaryOp) -> Result<()> {
-        self.generate_expression(&is_expr.left)?;
+        self.generate_is_operand(&is_expr.left)?;
         self.write_space();
         self.write_keyword("IS");
         self.write_space();
-        self.generate_expression(&is_expr.right)
+        self.generate_is_operand(&is_expr.right)
     }
 
     fn generate_exists(&mut self, exists: &Exists) -> Result<()> {

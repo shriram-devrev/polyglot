@@ -28998,13 +28998,6 @@ impl Parser {
 
     /// Parse NOT expressions
     fn parse_not(&mut self) -> Result<Expression> {
-        if matches!(
-            self.config.dialect,
-            Some(crate::dialects::DialectType::ClickHouse)
-        ) {
-            return self.parse_comparison();
-        }
-
         if self.check(TokenType::Not) {
             let raw_start = self.current;
             self.skip();
@@ -30697,13 +30690,6 @@ impl Parser {
         } else if self.match_token(TokenType::Dash) {
             let expr = self.parse_unary()?;
             Ok(Expression::Neg(Box::new(UnaryOp::new(expr))))
-        } else if matches!(
-            self.config.dialect,
-            Some(crate::dialects::DialectType::ClickHouse)
-        ) && self.match_token(TokenType::Not)
-        {
-            let expr = self.parse_unary()?;
-            Ok(Expression::Not(Box::new(UnaryOp::new(expr))))
         } else if self.match_token(TokenType::Plus) {
             // Unary plus: +1, +expr — just return the inner expression (no-op)
             self.parse_unary()
