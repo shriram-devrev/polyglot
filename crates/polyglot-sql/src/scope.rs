@@ -688,7 +688,6 @@ fn build_scope_impl(expression: &Expression, current_scope: &mut Scope) {
         }
         Expression::JoinedTable(joined) => {
             add_join_group_to_scope(joined, current_scope);
-            collect_subqueries(expression, current_scope);
         }
         Expression::Union(union) => {
             if let Some(with) = &union.with {
@@ -789,6 +788,12 @@ fn add_join_group_to_scope(joined: &crate::expressions::JoinedTable, scope: &mut
     add_table_to_scope(&joined.left, scope);
     for join in &joined.joins {
         add_table_to_scope(&join.this, scope);
+        if let Some(condition) = &join.on {
+            collect_subqueries_in_expr(condition, scope);
+        }
+        if let Some(condition) = &join.match_condition {
+            collect_subqueries_in_expr(condition, scope);
+        }
     }
     for lateral_view in &joined.lateral_views {
         add_lateral_view_to_scope(lateral_view, scope);
@@ -856,7 +861,10 @@ fn add_table_to_scope(expr: &Expression, scope: &mut Scope) {
         Expression::Alias(alias) if matches!(&alias.this, Expression::Unnest(_)) => {
             scope.add_virtual_source(alias.alias.name.clone(), expr.clone());
         }
-        Expression::Alias(alias) if is_query_like_relation(&alias.this) => {
+        Expression::Alias(alias)
+            if is_query_like_relation(&alias.this)
+                || matches!(&alias.this, Expression::JoinedTable(_)) =>
+        {
             let outer_columns = alias
                 .column_aliases
                 .iter()
