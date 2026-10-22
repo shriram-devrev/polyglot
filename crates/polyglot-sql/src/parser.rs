@@ -45569,6 +45569,7 @@ impl Parser {
                     | TokenType::Type
                     | TokenType::Owned
                     | TokenType::Match
+                    | TokenType::Final
             ),
             Some(crate::dialects::DialectType::ClickHouse) => {
                 matches!(self.peek().token_type, TokenType::First | TokenType::Last)

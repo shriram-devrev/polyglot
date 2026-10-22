@@ -2,7 +2,7 @@ use polyglot_sql::{generate, parse_one, DialectType, Expression};
 
 #[test]
 fn duckdb_accepts_unreserved_relation_aliases() {
-    for name in ["owned", "match"] {
+    for name in ["owned", "match", "final"] {
         for alias in [name.to_string(), format!("AS {name}")] {
             for relation in ["samples", "(SELECT id FROM samples)", "UNNEST([1, 2])"] {
                 let sql =
@@ -78,5 +78,21 @@ fn quoted_keyword_relation_aliases_keep_their_spelling() {
             assert_eq!(alias.name, name);
             assert!(alias.quoted);
         }
+    }
+}
+
+#[test]
+fn clickhouse_keeps_final_as_a_table_modifier() {
+    for sql in [
+        "SELECT id FROM samples FINAL",
+        "SELECT s.id FROM samples AS s FINAL",
+    ] {
+        let Expression::Select(query) = parse_one(sql, DialectType::ClickHouse).unwrap() else {
+            panic!("expected SELECT")
+        };
+        let Expression::Table(table) = &query.from.unwrap().expressions[0] else {
+            panic!("expected table")
+        };
+        assert!(table.final_);
     }
 }
