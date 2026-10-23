@@ -92,15 +92,20 @@ fn atomic_and_already_parenthesized_operands_keep_their_shape() {
 fn builder_is_predicates_preserve_boolean_operands() {
     use polyglot_sql::builder::col;
     for operand in [col("a").or(col("b")), col("a").and(col("b"))] {
-        let expression = operand.clone().is_null().0;
-        let output = generate(&expression, DialectType::DuckDB).unwrap();
-        assert_eq!(
-            projected(&format!("SELECT {output}")),
-            projected(&format!(
-                "SELECT ({}) IS NULL",
+        for not in [false, true] {
+            let expression = if not {
+                operand.clone().is_not_null().0
+            } else {
+                operand.clone().is_null().0
+            };
+            let output = generate(&expression, DialectType::DuckDB).unwrap();
+            let expected = format!(
+                "SELECT {}({}) IS NULL",
+                if not { "NOT " } else { "" },
                 generate(&operand.0, DialectType::DuckDB).unwrap()
-            ))
-        );
+            );
+            assert_eq!(projected(&format!("SELECT {output}")), projected(&expected));
+        }
     }
 }
 
