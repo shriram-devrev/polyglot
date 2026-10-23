@@ -572,6 +572,7 @@ pub struct Parser {
     /// an if-expression. Without this the retry is repeated on every path that reaches
     /// the position, and a chain of `IF`s costs 2^k.
     if_expr_ruled_out: HashSet<usize>,
+    parsing_duckdb_json_path: bool,
     recursion: Arc<ParserRecursion>,
 }
 
@@ -701,6 +702,7 @@ impl Parser {
             guards_checked: false,
             token_guard_stats: None,
             if_expr_ruled_out: HashSet::new(),
+            parsing_duckdb_json_path: false,
             recursion: Arc::default(),
         }
     }
@@ -718,6 +720,7 @@ impl Parser {
             guards_checked: false,
             token_guard_stats: None,
             if_expr_ruled_out: HashSet::new(),
+            parsing_duckdb_json_path: false,
             recursion: Arc::default(),
         }
     }
@@ -738,6 +741,7 @@ impl Parser {
             guards_checked: false,
             token_guard_stats: None,
             if_expr_ruled_out: HashSet::new(),
+            parsing_duckdb_json_path: false,
             recursion: Arc::default(),
         }
     }
@@ -761,6 +765,7 @@ impl Parser {
             guards_checked: false,
             token_guard_stats: Some(token_guard_stats),
             if_expr_ruled_out: HashSet::new(),
+            parsing_duckdb_json_path: false,
             recursion: Arc::default(),
         }
     }
@@ -30317,16 +30322,19 @@ impl Parser {
     /// Assignment (:=) has lower precedence than OR, matching Python sqlglot's
     /// _parse_expression -> _parse_assignment -> _parse_disjunction chain
     fn parse_expression(&mut self) -> Result<Expression> {
-        self.with_recursive_stack(|parser| parser.parse_expression_inner())
+        let outer_path = std::mem::take(&mut self.parsing_duckdb_json_path);
+        let result = self.with_recursive_stack(|parser| parser.parse_expression_inner());
+        self.parsing_duckdb_json_path = outer_path;
+        result
     }
 
     fn parse_expression_inner(&mut self) -> Result<Expression> {
-        let mut left = self.parse_or()?;
+        let mut left = self.parse_duckdb_json_arrow()?;
 
         // Handle := assignment operator (MySQL @var := val, DuckDB named args/settings)
         // This has lower precedence than OR
         while self.match_token(TokenType::ColonEq) {
-            let right = self.parse_or()?;
+            let right = self.parse_duckdb_json_arrow()?;
             left = Expression::PropertyEQ(Box::new(BinaryOp::new(left, right)));
         }
 
@@ -30379,6 +30387,47 @@ impl Parser {
         }
 
         Ok(left)
+    }
+
+    // DuckDB's -> binds below boolean and arithmetic operators. Other dialects
+    // retain their postfix arrows, and ->> keeps its distinct native precedence.
+    fn parse_duckdb_json_arrow(&mut self) -> Result<Expression> {
+        let expression_start = self.current;
+        let mut expression = self.parse_or()?;
+        if self.config.dialect == Some(crate::dialects::DialectType::DuckDB) {
+            while self.match_token(TokenType::Arrow) {
+                let outer_path = std::mem::replace(&mut self.parsing_duckdb_json_path, true);
+                let path = self.parse_or();
+                self.parsing_duckdb_json_path = outer_path;
+                expression = Expression::JsonExtract(Box::new(JsonExtractFunc {
+                    options: None,
+                    source_dialect: None,
+                    this: expression,
+                    path: path?,
+                    returning: None,
+                    arrow_syntax: true,
+                    hash_arrow_syntax: false,
+                    wrapper_option: None,
+                    quotes_option: None,
+                    on_scalar_string: false,
+                    on_error: None,
+                }));
+                if self.check(TokenType::DArrow) {
+                    // A mixed chain continues on the extracted document, rather
+                    // than becoming a scalar extraction inside the path.
+                    expression = self.parse_duckdb_concat_tail(expression)?;
+                    expression = self.parse_shift_tail(expression, expression_start)?;
+                    expression = self.parse_bitwise_and_tail(expression)?;
+                    expression = self.parse_bitwise_xor_tail(expression)?;
+                    expression = self.parse_bitwise_or_tail(expression)?;
+                    expression = self.parse_comparison_tail(expression, Vec::new())?;
+                    expression = self.parse_and_tail(expression)?;
+                    expression = self.parse_xor_tail(expression)?;
+                    expression = self.parse_or_tail(expression)?;
+                }
+            }
+        }
+        Ok(expression)
     }
 
     /// Parse OR expressions
@@ -31810,7 +31859,8 @@ impl Parser {
         // Then work up through addition, shift, bitwise AND/XOR/OR
         let mult_result = self.parse_multiplication_continuation(left)?;
         let add_result = self.parse_addition_continuation(mult_result)?;
-        self.parse_bitwise_or_continuation(add_result)
+        let concat_result = self.parse_duckdb_concat_tail(add_result)?;
+        self.parse_bitwise_or_continuation(concat_result)
     }
 
     /// Parse bitwise OR with an existing left expression
@@ -31900,7 +31950,10 @@ impl Parser {
                     trailing_comments,
                     inferred_type: None,
                 }))
-            } else if !self.dpipe_is_logical_or() && self.match_token(TokenType::DPipe) {
+            } else if self.config.dialect != Some(crate::dialects::DialectType::DuckDB)
+                && !self.dpipe_is_logical_or()
+                && self.match_token(TokenType::DPipe)
+            {
                 let operator_comments = self.previous_trailing_comments().to_vec();
                 let right = self.parse_at_time_zone()?;
                 let trailing_comments = self.previous_trailing_comments().to_vec();
@@ -31981,7 +32034,7 @@ impl Parser {
     #[inline(always)]
     fn parse_shift(&mut self) -> Result<Expression> {
         let expr_start = self.current;
-        let left = self.parse_addition()?;
+        let left = self.parse_duckdb_concat()?;
         self.parse_shift_tail(left, expr_start)
     }
 
@@ -31994,17 +32047,67 @@ impl Parser {
                     Some(crate::dialects::DialectType::PostgreSQL)
                 ) && self.match_token(TokenType::DArrow)
                 {
-                    let _ = self.parse_addition()?;
+                    let _ = self.parse_duckdb_concat()?;
                     left = Expression::Raw(Raw {
                         sql: self.tokens_to_sql(expr_start, self.current),
                     });
                     continue;
                 }
-                let right = self.parse_addition()?;
+                let right = self.parse_duckdb_concat()?;
                 left = Expression::BitwiseLeftShift(Box::new(BinaryOp::new(left, right)));
             } else if self.match_token(TokenType::GtGt) {
-                let right = self.parse_addition()?;
+                let right = self.parse_duckdb_concat()?;
                 left = Expression::BitwiseRightShift(Box::new(BinaryOp::new(left, right)));
+            } else {
+                return Ok(left);
+            }
+        }
+    }
+
+    fn parse_duckdb_concat(&mut self) -> Result<Expression> {
+        let left = self.parse_addition()?;
+        self.parse_duckdb_concat_tail(left)
+    }
+
+    // ->> shares DuckDB's concatenation precedence, below arithmetic but above
+    // comparisons. It intentionally differs from the low-precedence -> operator.
+    fn parse_duckdb_concat_tail(&mut self, mut left: Expression) -> Result<Expression> {
+        if self.config.dialect != Some(crate::dialects::DialectType::DuckDB) {
+            return Ok(left);
+        }
+        loop {
+            if self.parsing_duckdb_json_path && self.check(TokenType::DArrow) {
+                return Ok(left);
+            }
+            if self.match_token(TokenType::DArrow) {
+                let path = self.parse_addition()?;
+                left = Expression::JsonExtractScalar(Box::new(JsonExtractFunc {
+                    options: None,
+                    source_dialect: None,
+                    this: left,
+                    path,
+                    returning: None,
+                    arrow_syntax: true,
+                    hash_arrow_syntax: false,
+                    wrapper_option: None,
+                    quotes_option: None,
+                    on_scalar_string: false,
+                    on_error: None,
+                }));
+            } else if self.check(TokenType::DPipe) {
+                let left_comments = self.previous_trailing_comments().to_vec();
+                self.skip();
+                let operator_comments = self.previous_trailing_comments().to_vec();
+                let right = self.parse_addition()?;
+                let trailing_comments = self.previous_trailing_comments().to_vec();
+                left = Expression::Concat(Box::new(BinaryOp {
+                    left,
+                    right,
+                    left_comments,
+                    operator_comments,
+                    trailing_comments,
+                    inferred_type: None,
+                }));
             } else {
                 return Ok(left);
             }
@@ -32049,7 +32152,10 @@ impl Parser {
                     trailing_comments,
                     inferred_type: None,
                 }))
-            } else if !self.dpipe_is_logical_or() && self.match_token(TokenType::DPipe) {
+            } else if self.config.dialect != Some(crate::dialects::DialectType::DuckDB)
+                && !self.dpipe_is_logical_or()
+                && self.match_token(TokenType::DPipe)
+            {
                 let operator_comments = self.previous_trailing_comments().to_vec();
                 let right = self.parse_at_time_zone()?;
                 let trailing_comments = self.previous_trailing_comments().to_vec();
@@ -42823,6 +42929,7 @@ impl Parser {
                 && !matches!(
                     self.config.dialect,
                     Some(crate::dialects::DialectType::ClickHouse)
+                        | Some(crate::dialects::DialectType::DuckDB)
                 )
             {
                 self.skip(); // consume ->
@@ -42843,7 +42950,9 @@ impl Parser {
                     on_scalar_string: false,
                     on_error: None,
                 }));
-            } else if self.match_token(TokenType::DArrow) {
+            } else if self.config.dialect != Some(crate::dialects::DialectType::DuckDB)
+                && self.match_token(TokenType::DArrow)
+            {
                 // JSON extract text operator: expr ->> path (PostgreSQL, MySQL, DuckDB)
                 // Use parse_json_path_operand to get only the immediate operand for proper left-to-right associativity
                 let path = self.parse_json_path_operand()?;
@@ -56735,6 +56844,7 @@ impl Parser {
     fn parse_function_lambda(&mut self) -> Result<Option<Expression>> {
         let start = self.current;
         let mut parentheses: Vec<Vec<String>> = Vec::new();
+        let mut depths = Vec::new();
         loop {
             if let Some(mut expression) = self.parse_lambda()? {
                 for mut comments in parentheses.into_iter().rev() {
@@ -56754,6 +56864,7 @@ impl Parser {
                 self.current = start;
                 return Ok(None);
             }
+            depths.push(self.enter_parser_depth(1)?);
             parentheses.push(self.previous_trailing_comments().to_vec());
         }
     }
