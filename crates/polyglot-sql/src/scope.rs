@@ -752,6 +752,9 @@ fn build_scope_impl(expression: &Expression, current_scope: &mut Scope) {
         Expression::Paren(paren) => {
             build_scope_impl(&paren.this, current_scope);
         }
+        Expression::Alias(alias) => {
+            build_scope_impl(&alias.this, current_scope);
+        }
         _ => {}
     }
 }
