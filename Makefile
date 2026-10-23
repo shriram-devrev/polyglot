@@ -294,6 +294,7 @@ test-rust-verify-core:
 	@cargo test -p polyglot-sql --test duckdb_unreserved_relation_aliases
 	@cargo test -p polyglot-sql --test query_analysis
 	@cargo test -p polyglot-sql --test query_analysis_regression
+	@cargo test -p polyglot-sql --test quoted_relation_columns
 	@echo ""
 	@echo "=== Generic identity tests ==="
 	@cargo test --test sqlglot_identity test_sqlglot_identity_all -p polyglot-sql -- --nocapture
