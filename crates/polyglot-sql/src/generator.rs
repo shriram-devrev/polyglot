@@ -23900,7 +23900,7 @@ impl Generator {
         let generate_term =
             |generator: &mut Self, term: &Expression, side: OperandSide| -> Result<()> {
                 let should_wrap_for_precedence =
-                    Self::infix_operand_needs_parentheses(self.config.dialect, connector.infix_operator(), term, side);
+                    Self::infix_operand_needs_parentheses(generator.config.dialect, connector.infix_operator(), term, side);
                 let should_wrap_for_clickhouse = matches!(connector, ConnectorOperator::Or)
                     && matches!(generator.config.dialect, Some(DialectType::ClickHouse))
                     && matches!(
