@@ -863,7 +863,7 @@ fn add_table_to_scope(expr: &Expression, scope: &mut Scope) {
         }
         Expression::Alias(alias)
             if is_query_like_relation(&alias.this)
-                || matches!(&alias.this, Expression::JoinedTable(_)) =>
+                || matches!(scope_query(&alias.this), Expression::JoinedTable(_)) =>
         {
             let outer_columns = alias
                 .column_aliases

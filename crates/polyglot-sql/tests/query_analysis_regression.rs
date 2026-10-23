@@ -227,3 +227,96 @@ fn base_tables_include_every_parenthesized_join_member() {
         assert_eq!(names, expected, "missing join member for {sql}");
     }
 }
+
+#[test]
+fn aliased_join_groups_own_their_predicate_facts() {
+    use polyglot_sql::{ColumnUseContext, ReferenceConfidence};
+    for group in [
+        "(beta b JOIN gamma c ON b.id = c.id)",
+        "((beta b JOIN gamma c ON b.id = c.id))",
+        "(((beta b JOIN gamma c ON b.id = c.id)))",
+    ] {
+        for alias in ["", " AS g", " AS g(x, y)"] {
+            let sql = format!("SELECT 1 FROM {group}{alias}");
+            let analysis = analyze_query(
+                &sql,
+                AnalyzeQueryOptions {
+                    dialect: DialectType::DuckDB,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                analysis
+                    .base_tables
+                    .iter()
+                    .map(|table| table.name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["beta", "gamma"],
+                "{sql}"
+            );
+            let joins: Vec<_> = analysis
+                .column_uses
+                .iter()
+                .filter(|fact| fact.context == ColumnUseContext::Join)
+                .collect();
+            assert_eq!(joins.len(), 1, "{sql}: {joins:?}");
+            assert_eq!(
+                joins[0].scope_path,
+                if alias.is_empty() {
+                    "root"
+                } else {
+                    "root.derived[0]"
+                },
+                "{sql}"
+            );
+            assert_eq!(joins[0].references.len(), 2, "{sql}");
+            for (reference, table) in joins[0].references.iter().zip(["beta", "gamma"]) {
+                assert_eq!(reference.reference.table.as_deref(), Some(table), "{sql}");
+                assert_eq!(
+                    reference.reference.confidence,
+                    ReferenceConfidence::Resolved,
+                    "{sql}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn wrapped_join_aliases_keep_nested_dependencies_and_alias_isolation() {
+    use polyglot_sql::scope::build_scope;
+    for alias in ["g", "g(x, y)"] {
+        let sql = format!("SELECT 1 FROM (((beta b JOIN gamma c ON c.id IN (SELECT id FROM delta)) JOIN epsilon e ON b.id = e.id)) AS {alias}");
+        let expression = parse_one_statement(&sql, DialectType::DuckDB);
+        let scope = build_scope(&expression);
+        assert_eq!(scope.sources.len(), 1);
+        assert!(scope.sources.contains_key("g"));
+        assert_eq!(scope.derived_table_scopes.len(), 1);
+        assert_eq!(
+            scope.derived_table_scopes[0].outer_columns,
+            if alias.contains('(') {
+                vec!["x", "y"]
+            } else {
+                vec![]
+            }
+        );
+        let analysis = analyze_query(
+            &sql,
+            AnalyzeQueryOptions {
+                dialect: DialectType::DuckDB,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            analysis
+                .base_tables
+                .iter()
+                .map(|table| table.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["beta", "delta", "epsilon", "gamma"],
+            "{sql}"
+        );
+    }
+}

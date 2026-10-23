@@ -10267,7 +10267,7 @@ impl Generator {
                     if i > 0 {
                         self.write(", ");
                     }
-                    self.generate_identifier(col)?;
+                    self.generate_index_identifier(col)?;
                     if matches!(self.config.dialect, Some(DialectType::Databricks))
                         && timeseries_columns.iter().any(|candidate| candidate == col)
                     {
@@ -10329,7 +10329,7 @@ impl Generator {
                         if i > 0 {
                             self.write(", ");
                         }
-                        self.generate_identifier(col)?;
+                        self.generate_index_identifier(col)?;
                     }
                     self.write(")");
                 } else {
@@ -16664,6 +16664,18 @@ impl Generator {
     }
 
     fn generate_identifier(&mut self, id: &Identifier) -> Result<()> {
+        self.generate_identifier_with_index_suffix(id, false)
+    }
+
+    fn generate_index_identifier(&mut self, id: &Identifier) -> Result<()> {
+        self.generate_identifier_with_index_suffix(id, true)
+    }
+
+    fn generate_identifier_with_index_suffix(
+        &mut self,
+        id: &Identifier,
+        index_suffix: bool,
+    ) -> Result<()> {
         use crate::dialects::DialectType;
 
         let name = &id.name;
@@ -16710,7 +16722,7 @@ impl Generator {
 
         // Check for MySQL index column prefix length: name(16) or name(16) ASC/DESC
         // When quoted, we need to output `name`(16) not `name(16)`
-        let (base_name, suffix) = if needs_quoting {
+        let (base_name, suffix) = if index_suffix && needs_quoting {
             // Try to extract prefix length from identifier: name(number) or name(number) ASC/DESC
             if let Some(paren_pos) = name.find('(') {
                 let base = &name[..paren_pos];
@@ -23809,9 +23821,15 @@ impl Generator {
         operator: &str,
         infix_operator: Option<InfixOperator>,
     ) -> Result<()> {
-        let wrap_left = Self::is_low_precedence_json_arrow(self.config.dialect, &op.left) || infix_operator.is_some_and(|parent| {
-            Self::infix_operand_needs_parentheses(self.config.dialect, parent, &op.left, OperandSide::Left)
-        });
+        let wrap_left = Self::is_low_precedence_json_arrow(self.config.dialect, &op.left)
+            || infix_operator.is_some_and(|parent| {
+                Self::infix_operand_needs_parentheses(
+                    self.config.dialect,
+                    parent,
+                    &op.left,
+                    OperandSide::Left,
+                )
+            });
         if wrap_left {
             self.write("(");
         }
@@ -23887,9 +23905,15 @@ impl Generator {
             self.write_formatted_comment(comment);
         }
         self.write_space();
-        let wrap_right = Self::is_low_precedence_json_arrow(self.config.dialect, &op.right) || infix_operator.is_some_and(|parent| {
-            Self::infix_operand_needs_parentheses(self.config.dialect, parent, &op.right, OperandSide::Right)
-        });
+        let wrap_right = Self::is_low_precedence_json_arrow(self.config.dialect, &op.right)
+            || infix_operator.is_some_and(|parent| {
+                Self::infix_operand_needs_parentheses(
+                    self.config.dialect,
+                    parent,
+                    &op.right,
+                    OperandSide::Right,
+                )
+            });
         if wrap_right {
             self.write("(");
         }
@@ -23913,8 +23937,12 @@ impl Generator {
 
         let generate_term =
             |generator: &mut Self, term: &Expression, side: OperandSide| -> Result<()> {
-                let should_wrap_for_precedence =
-                    Self::infix_operand_needs_parentheses(generator.config.dialect, connector.infix_operator(), term, side);
+                let should_wrap_for_precedence = Self::infix_operand_needs_parentheses(
+                    generator.config.dialect,
+                    connector.infix_operator(),
+                    term,
+                    side,
+                );
                 let should_wrap_for_clickhouse = matches!(connector, ConnectorOperator::Or)
                     && matches!(generator.config.dialect, Some(DialectType::ClickHouse))
                     && matches!(
@@ -24077,7 +24105,8 @@ impl Generator {
         expression: &Expression,
         side: OperandSide,
     ) -> Result<()> {
-        let needs_parentheses = Self::infix_operand_needs_parentheses(self.config.dialect, parent, expression, side);
+        let needs_parentheses =
+            Self::infix_operand_needs_parentheses(self.config.dialect, parent, expression, side);
         if needs_parentheses {
             self.write("(");
         }
@@ -24257,9 +24286,15 @@ impl Generator {
         operator: &str,
         infix_operator: Option<InfixOperator>,
     ) -> Result<()> {
-        let wrap_left = Self::is_low_precedence_json_arrow(self.config.dialect, &op.left) || infix_operator.is_some_and(|parent| {
-            Self::infix_operand_needs_parentheses(self.config.dialect, parent, &op.left, OperandSide::Left)
-        });
+        let wrap_left = Self::is_low_precedence_json_arrow(self.config.dialect, &op.left)
+            || infix_operator.is_some_and(|parent| {
+                Self::infix_operand_needs_parentheses(
+                    self.config.dialect,
+                    parent,
+                    &op.left,
+                    OperandSide::Left,
+                )
+            });
         if wrap_left {
             self.write("(");
         }
@@ -24314,9 +24349,15 @@ impl Generator {
             self.write_formatted_comment(comment);
         }
         self.write_space();
-        let wrap_right = Self::is_low_precedence_json_arrow(self.config.dialect, &op.right) || infix_operator.is_some_and(|parent| {
-            Self::infix_operand_needs_parentheses(self.config.dialect, parent, &op.right, OperandSide::Right)
-        });
+        let wrap_right = Self::is_low_precedence_json_arrow(self.config.dialect, &op.right)
+            || infix_operator.is_some_and(|parent| {
+                Self::infix_operand_needs_parentheses(
+                    self.config.dialect,
+                    parent,
+                    &op.right,
+                    OperandSide::Right,
+                )
+            });
         if wrap_right {
             self.write("(");
         }
@@ -33776,7 +33817,7 @@ impl Generator {
             self.generate_expression(&e.this)?;
             if let Some(alias) = &e.alias {
                 self.write_space();
-                self.generate_identifier(&Identifier {
+                self.generate_alias_identifier(&Identifier {
                     quoted: e.alias_quoted,
                     ..Identifier::new(alias)
                 })?;
@@ -33794,7 +33835,7 @@ impl Generator {
                 self.write_space();
                 self.write_keyword("AS");
                 self.write_space();
-                self.generate_identifier(&Identifier {
+                self.generate_alias_identifier(&Identifier {
                     quoted: e.alias_quoted,
                     ..Identifier::new(alias)
                 })?;
@@ -33804,7 +33845,7 @@ impl Generator {
                         if i > 0 {
                             self.write(", ");
                         }
-                        self.generate_identifier(&Identifier {
+                        self.generate_alias_identifier(&Identifier {
                             quoted: e.column_aliases_quoted.get(i).copied().unwrap_or(false),
                             ..Identifier::new(col)
                         })?;
