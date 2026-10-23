@@ -147,6 +147,7 @@ enum InfixOperator {
     Or,
     Xor,
     And,
+    Comparison,
     Add,
     Sub,
     Mul,
@@ -160,8 +161,9 @@ impl InfixOperator {
             Self::Or => 1,
             Self::Xor => 2,
             Self::And => 3,
-            Self::Add | Self::Sub => 4,
-            Self::Mul | Self::Div | Self::Mod => 5,
+            Self::Comparison => 4,
+            Self::Add | Self::Sub => 5,
+            Self::Mul | Self::Div | Self::Mod => 6,
         }
     }
 
@@ -3517,12 +3519,24 @@ impl Generator {
                     self.generate_precedence_binary_op(op, "%", InfixOperator::Mod)
                 }
             }
-            Expression::Eq(op) => self.generate_binary_op(op, "="),
-            Expression::Neq(op) => self.generate_binary_op(op, "<>"),
-            Expression::Lt(op) => self.generate_binary_op(op, "<"),
-            Expression::Lte(op) => self.generate_binary_op(op, "<="),
-            Expression::Gt(op) => self.generate_binary_op(op, ">"),
-            Expression::Gte(op) => self.generate_binary_op(op, ">="),
+            Expression::Eq(op) => {
+                self.generate_precedence_binary_op(op, "=", InfixOperator::Comparison)
+            }
+            Expression::Neq(op) => {
+                self.generate_precedence_binary_op(op, "<>", InfixOperator::Comparison)
+            }
+            Expression::Lt(op) => {
+                self.generate_precedence_binary_op(op, "<", InfixOperator::Comparison)
+            }
+            Expression::Lte(op) => {
+                self.generate_precedence_binary_op(op, "<=", InfixOperator::Comparison)
+            }
+            Expression::Gt(op) => {
+                self.generate_precedence_binary_op(op, ">", InfixOperator::Comparison)
+            }
+            Expression::Gte(op) => {
+                self.generate_precedence_binary_op(op, ">=", InfixOperator::Comparison)
+            }
             Expression::Like(op) => self.generate_like_op(op, "LIKE"),
             Expression::ILike(op) => self.generate_like_op(op, "ILIKE"),
             Expression::Match(op) => self.generate_binary_op(op, "MATCH"),
@@ -26008,6 +26022,14 @@ impl Generator {
     ) -> bool {
         if matches!(child, Expression::Paren(_)) {
             return false;
+        }
+
+        // Prefix NOT binds below comparisons; transformed function operands may
+        // contain it without the explicit parentheses a SQL parser would retain.
+        if matches!(child, Expression::Not(_))
+            && (parent == InfixOperator::Comparison || parent.is_arithmetic())
+        {
+            return true;
         }
 
         // Bitwise precedence differs between dialects. Group these operands

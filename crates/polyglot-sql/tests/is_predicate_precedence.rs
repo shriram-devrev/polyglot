@@ -154,3 +154,52 @@ fn json_predicates_preserve_boolean_operands() {
         }
     }
 }
+
+#[test]
+fn clickhouse_transformed_not_like_operands_remain_grouped_in_comparisons() {
+    use polyglot_sql::dialects::Dialect;
+    let dialect = Dialect::get(DialectType::ClickHouse);
+    let input = "SELECT notLike(a, '%x%') != notLike(b, '%x%')";
+    let parsed = parse_one(input, DialectType::ClickHouse).unwrap();
+    let transformed = dialect.transform(parsed).unwrap();
+    let first = generate(&transformed, DialectType::ClickHouse).unwrap();
+    assert_eq!(first, "SELECT (NOT a LIKE '%x%') <> (NOT b LIKE '%x%')");
+    let reparsed = parse_one(&first, DialectType::ClickHouse).unwrap();
+    let second = generate(
+        &dialect.transform(reparsed).unwrap(),
+        DialectType::ClickHouse,
+    )
+    .unwrap();
+    assert_eq!(first, second);
+}
+
+#[test]
+fn comparison_builders_preserve_both_boolean_operands() {
+    use polyglot_sql::expressions::BinaryOp;
+    for operand in ["a OR b", "a AND b", "NOT a"] {
+        for operator in ["=", "<>", "<", "<=", ">", ">="] {
+            let operands = Box::new(BinaryOp::new(
+                projected(&format!("SELECT {operand}")),
+                projected("SELECT NOT c"),
+            ));
+            let expression = match operator {
+                "=" => Expression::Eq(operands),
+                "<>" => Expression::Neq(operands),
+                "<" => Expression::Lt(operands),
+                "<=" => Expression::Lte(operands),
+                ">" => Expression::Gt(operands),
+                ">=" => Expression::Gte(operands),
+                _ => unreachable!(),
+            };
+            for dialect in [
+                DialectType::DuckDB,
+                DialectType::PostgreSQL,
+                DialectType::ClickHouse,
+            ] {
+                let sql = generate(&expression, dialect).unwrap();
+                assert_eq!(sql, format!("({operand}) {operator} (NOT c)"));
+                assert!(parse_one(&format!("SELECT {sql}"), dialect).is_ok());
+            }
+        }
+    }
+}
